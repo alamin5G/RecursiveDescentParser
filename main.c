@@ -1,6 +1,8 @@
 // parser.c
 // Recursive Descent Parser for Control Structures and Nested Expressions
 // Course: Programming Languages and Structures
+// Code by: Md. Alamin
+// Student ID: 21303134
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,11 +14,12 @@
 // --- Configuration ---
 
 #define MAX_SYMBOLS 100
-// Default Last Three Digits of Student ID. Can be changed.
-int g_student_ltd_value = 123;
+int g_student_ltd_value = 134; // Default value for LTD (Last Three Digits of Student ID)
+// --- Global Variables for Lexer and Parser ---
 static const char *g_source_code; // Start of the source code
 static const char *g_source_ptr;  // Pointer to the current character
 
+// =============1. Lexer (Scanner) Implementation============== start
 // --- Token Definitions ---
 typedef enum {
     TOKEN_EOF,
@@ -139,7 +142,7 @@ const char* test_cases[] = {
     "{ else { x; } }" // else without if
 };
 
-// Add this function to read input from console
+// read input from console
 char* read_from_console() {
     printf("Enter program (end with Ctrl+D on Unix/Linux or Ctrl+Z on Windows):\n");
     
@@ -194,6 +197,9 @@ static int get_symbol_value(const char* name) {
         return 0;
     }
 }
+
+
+// =============3. Error Handling============== start
 
 // --- Error Handling ---
 static void error_at_current_token(const char* message) {
@@ -366,6 +372,8 @@ static Token lexer_get_next_token_internal() {
     return err_token;
 }
 
+// =============1. Lexer (Scanner) Implementation============== end
+
 // --- Parser Helper Functions ---
 // Consumes the current token and gets the next one from the lexer.
 static void advance() {
@@ -392,9 +400,10 @@ static void eat(TokenType expected_type, const char* error_message) {
         error_at_current_token(full_error_message);
     }
 }
+// =============3. Error Handling============== end
 
+// =============2. Recursive Descent Parser============== start
 // --- Recursive Descent Parser Functions ---
-
 // <program> -> <block>
 static void program() {
     printf("Parsing <program>...\n");
@@ -547,6 +556,11 @@ static void factor() {
     printf("Finished parsing <factor>.\n");
 }
 
+// =============2. Recursive Descent Parser============== end
+
+
+// =============4. Expression Evaluation============== start
+
 // Example implementation for expression evaluation
 static int eval_term() {
     int result = eval_factor();
@@ -610,6 +624,8 @@ static int eval_factor() {
     return result;
 }
 
+// =============4. Expression Evaluation============== end
+
 // --- Initialization and Main Driver ---
 static void initialize_parser(const char* source_code) {
     g_source_code = source_code;
@@ -652,6 +668,8 @@ char* read_file_to_string(const char* filename) {
     fclose(file);
     return buffer;
 }
+
+// =============5. Test Case Suite============== start
 
 // Process a single test case
 static void process_test_case(const char* test_input, int test_number, int is_valid_expected) {
@@ -711,7 +729,10 @@ static void process_test_case(const char* test_input, int test_number, int is_va
     printf("\nTest result: %s\n", success ? "PASS" : "FAIL");
 }
 
-// Add this function to display an interactive menu
+// =============5. Test Case Suite============== start
+
+
+// display menu for choosing test method
 void display_interactive_menu() {
     printf("\n=== Recursive Descent Parser - Interactive Menu ===\n");
     printf("1. Enter code via console input\n");
@@ -723,7 +744,7 @@ void display_interactive_menu() {
     printf("Enter your choice (1-6): ");
 }
 
-// Modify your main function to include the interactive menu
+// Main function
 int main(int argc, char *argv[]) {
     const char* input_source = NULL;
     char* file_content = NULL;
