@@ -213,7 +213,5 @@ Program parsed successfully!
 
 Press Enter to continue...
 ```
-
-## Notes for Instructors
-
+--------------------------
 This implementation follows a modular design with clearly separated components for lexing, parsing, error handling, and evaluation. The parser strictly adheres to the grammar specification while providing robust error detection. The interactive interface makes testing and demonstration easier.
