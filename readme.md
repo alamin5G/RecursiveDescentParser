@@ -52,7 +52,7 @@ gcc -o parser main.c
 ```bash
 ./parser                # Run with default test case
 ./parser -interactive   # Show interactive menu
-./parser -ltd 999       # Set custom LTD value to 999
+./parser -ltd 999       # Set custom LTD value to 134
 ./parser input.txt      # Parse code from input.txt
 ./parser -test          # Run all test cases
 ```
@@ -63,7 +63,7 @@ gcc -o parser main.c
 2. Read code from a file
 3. Run test suite
 4. Use default test case
-5. Change LTD value (default: 123)
+5. Change LTD value (default: 134)
 6. Exit
 
 ### Command Line Arguments
@@ -191,7 +191,7 @@ $ ./parser -interactive
 2. Read code from a file
 3. Run test suite
 4. Use default test case
-5. Change LTD value (currently: 123)
+5. Change LTD value (currently: 134)
 6. Exit
 Enter your choice (1-6): 1
 
@@ -213,7 +213,5 @@ Program parsed successfully!
 
 Press Enter to continue...
 ```
-
-## Notes for Instructors
-
+--------------------------
 This implementation follows a modular design with clearly separated components for lexing, parsing, error handling, and evaluation. The parser strictly adheres to the grammar specification while providing robust error detection. The interactive interface makes testing and demonstration easier.
