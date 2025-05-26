@@ -1,0 +1,9 @@
+# depslib dependency file v1.0
+1748230359 source:c:\users\alami\onedrive\documents\recursivedescentparser\main.c
+	<stdio.h>
+	<stdlib.h>
+	<string.h>
+	<ctype.h>
+	<setjmp.h>
+	<unistd.h>
+

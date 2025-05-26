@@ -6,10 +6,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <setjmp.h>  // jmp_buf, setjmp, and longjmp
+#include <unistd.h>  // dup, dup2, and close functions
 
 // --- Configuration ---
+
+#define MAX_SYMBOLS 100
 // Default Last Three Digits of Student ID. Can be changed.
 int g_student_ltd_value = 123;
+static const char *g_source_code; // Start of the source code
+static const char *g_source_ptr;  // Pointer to the current character
 
 // --- Token Definitions ---
 typedef enum {
@@ -77,7 +83,6 @@ const char* token_type_to_string(TokenType type) {
     }
 }
 
-
 typedef struct {
     TokenType type;
     char value[100]; // Buffer for number value or identifier name
@@ -85,8 +90,15 @@ typedef struct {
     int col;         // Column number where the token starts
 } Token;
 
+typedef struct {
+    char name[100];
+    int value;
+} Symbol;
+
+Symbol g_symbol_table[MAX_SYMBOLS];
+int g_symbol_count = 0;
+
 // --- Global Variables for Lexer and Parser ---
-static const char *g_source_ptr;   // Pointer to the current character in the source code
 static Token g_current_token;      // The current token being processed by the parser
 static int g_current_line = 1;     // Current line number in the source
 static int g_current_col = 1;      // Current column number in the source
@@ -104,10 +116,109 @@ static void expression();
 static void term();
 static void factor();
 
+// Forward declarations for evaluator functions
+static int eval_expression();
+static int eval_term();
+static int eval_factor();
+// Error handling forward declaration
+static void error_at_current_token(const char* message);
+
+// Pre-defined test cases
+const char* test_cases[] = {
+    // Valid test cases
+    "{ if (a == LTD) { while (b < 100) { (a + b) * (b - LTD); } } else { (x + y) * (a - b); } }",
+    "{ a + b; }",
+    "{ if (x > 5) { y + 10; } }",
+    "{ while (i <= 10) { sum + i; i + 1; } }",
+    
+    // Invalid test cases
+    "{ a + b }", // Missing semicolon
+    "{ if (a == b) { a + b; }", // Mismatched brackets
+    "{ 3a + 5; }", // Invalid identifier
+    "{ if (a > b) if (c < d) { x; } }", // Nested if without braces for outer if
+    "{ else { x; } }" // else without if
+};
+
+// Add this function to read input from console
+char* read_from_console() {
+    printf("Enter program (end with Ctrl+D on Unix/Linux or Ctrl+Z on Windows):\n");
+    
+    // Initial buffer size
+    size_t bufsize = 1024;
+    char* buffer = (char*)malloc(bufsize);
+    if (!buffer) {
+        fprintf(stderr, "Memory allocation failed\n");
+        return NULL;
+    }
+    
+    size_t position = 0;
+    int c;
+    
+    while ((c = getchar()) != EOF) {
+        // Resize buffer if needed
+        if (position >= bufsize - 1) {
+            bufsize *= 2;
+            char* new_buffer = (char*)realloc(buffer, bufsize);
+            if (!new_buffer) {
+                fprintf(stderr, "Memory reallocation failed\n");
+                free(buffer);
+                return NULL;
+            }
+            buffer = new_buffer;
+        }
+        
+        buffer[position++] = (char)c;
+    }
+    
+    // Null-terminate the string
+    buffer[position] = '\0';
+    return buffer;
+}
+
+// Function to look up or add a symbol
+static int get_symbol_value(const char* name) {
+    // Look for existing symbol
+    for (int i = 0; i < g_symbol_count; i++) {
+        if (strcmp(g_symbol_table[i].name, name) == 0) {
+            return g_symbol_table[i].value;
+        }
+    }
+    
+    // Add new symbol with dummy value (0)
+    if (g_symbol_count < MAX_SYMBOLS) {
+        strcpy(g_symbol_table[g_symbol_count].name, name);
+        g_symbol_table[g_symbol_count].value = 0; // Default value
+        return g_symbol_table[g_symbol_count++].value;
+    } else {
+        error_at_current_token("Symbol table overflow");
+        return 0;
+    }
+}
+
 // --- Error Handling ---
 static void error_at_current_token(const char* message) {
     fprintf(stderr, "Syntax Error on line %d, col %d: %s\n", g_current_token.line, g_current_token.col, message);
     fprintf(stderr, "Near token: '%s' (Type: %s)\n", g_current_token.value, token_type_to_string(g_current_token.type));
+    
+    // Find the beginning of the line
+    const char* line_start = g_source_ptr;
+    while (line_start > g_source_code && *(line_start-1) != '\n') {
+        line_start--;
+    }
+    
+    // Find the end of the line
+    const char* line_end = g_source_ptr;
+    while (*line_end != '\0' && *line_end != '\n') {
+        line_end++;
+    }
+    
+    // Print the line
+    fprintf(stderr, "Line %d: ", g_current_token.line);
+    fprintf(stderr, "%.*s\n", (int)(line_end - line_start), line_start);
+    
+    // Print a caret pointing to the error position
+    fprintf(stderr, "%*s^\n", g_current_token.col - 1, "");
+    
     exit(EXIT_FAILURE);
 }
 
@@ -136,8 +247,42 @@ static void skip_whitespace_and_comments() {
                 g_current_col++;
             }
             g_source_ptr++;
-        } else {
-            break; // Not whitespace
+        } 
+        // Handle C-style comments
+        else if (*g_source_ptr == '/' && *(g_source_ptr + 1) == '*') {
+            g_source_ptr += 2; // Skip /*
+            g_current_col += 2;
+            
+            while (!(*g_source_ptr == '*' && *(g_source_ptr + 1) == '/') && *g_source_ptr != '\0') {
+                if (*g_source_ptr == '\n') {
+                    g_current_line++;
+                    g_current_col = 1;
+                } else {
+                    g_current_col++;
+                }
+                g_source_ptr++;
+            }
+            
+            if (*g_source_ptr == '\0') {
+                // Unclosed comment
+                error_at_current_token("Unclosed comment detected");
+            } else {
+                g_source_ptr += 2; // Skip */
+                g_current_col += 2;
+            }
+        }
+        // Handle C++-style comments
+        else if (*g_source_ptr == '/' && *(g_source_ptr + 1) == '/') {
+            g_source_ptr += 2; // Skip //
+            g_current_col += 2;
+            
+            while (*g_source_ptr != '\n' && *g_source_ptr != '\0') {
+                g_source_ptr++;
+                g_current_col++;
+            }
+        }
+        else {
+            break; // Not whitespace or comment
         }
     }
 }
@@ -402,12 +547,78 @@ static void factor() {
     printf("Finished parsing <factor>.\n");
 }
 
+// Example implementation for expression evaluation
+static int eval_term() {
+    int result = eval_factor();
+    
+    while (g_current_token.type == TOKEN_MULTIPLY || g_current_token.type == TOKEN_DIVIDE) {
+        TokenType op = g_current_token.type;
+        advance(); // Consume '*' or '/'
+        int factor_value = eval_factor();
+        
+        if (op == TOKEN_MULTIPLY) {
+            result *= factor_value;
+        } else { // DIVIDE
+            if (factor_value == 0) {
+                error_at_current_token("Division by zero");
+            }
+            result /= factor_value;
+        }
+    }
+    
+    return result;
+}
+
+static int eval_expression() {
+    int result = eval_term();
+    
+    while (g_current_token.type == TOKEN_PLUS || g_current_token.type == TOKEN_MINUS) {
+        TokenType op = g_current_token.type;
+        advance(); // Consume '+' or '-'
+        int term_value = eval_term();
+        
+        if (op == TOKEN_PLUS) {
+            result += term_value;
+        } else { // MINUS
+            result -= term_value;
+        }
+    }
+    
+    return result;
+}
+
+static int eval_factor() {
+    int result = 0;
+    
+    if (g_current_token.type == TOKEN_NUMBER) {
+        result = atoi(g_current_token.value);
+        eat(TOKEN_NUMBER, "Error processing number in factor evaluation");
+    } else if (g_current_token.type == TOKEN_IDENTIFIER) {
+        result = get_symbol_value(g_current_token.value);
+        eat(TOKEN_IDENTIFIER, "Error processing identifier in factor evaluation");
+    } else if (g_current_token.type == TOKEN_LTD) {
+        result = g_student_ltd_value;
+        eat(TOKEN_LTD, "Error processing LTD in factor evaluation");
+    } else if (g_current_token.type == TOKEN_LPAREN) {
+        eat(TOKEN_LPAREN, "Expected '(' for sub-expression in factor evaluation");
+        result = eval_expression();
+        eat(TOKEN_RPAREN, "Expected ')' after sub-expression in factor evaluation");
+    } else {
+        error_at_current_token("Invalid factor in evaluation");
+    }
+    
+    return result;
+}
+
 // --- Initialization and Main Driver ---
 static void initialize_parser(const char* source_code) {
+    g_source_code = source_code;
     g_source_ptr = source_code;
     g_current_line = 1;
     g_current_col = 1;
     g_start_col_for_token = 1;
+    g_symbol_count = 0;
+    
     // Load the first token to prime the parser
     advance();
 }
@@ -442,42 +653,301 @@ char* read_file_to_string(const char* filename) {
     return buffer;
 }
 
+// Process a single test case
+static void process_test_case(const char* test_input, int test_number, int is_valid_expected) {
+    printf("\n\n------------------------------------------\n");
+    printf("TEST CASE %d: %s\n", test_number, is_valid_expected ? "VALID" : "INVALID");
+    printf("------------------------------------------\n");
+    printf("Input: %s\n\n", test_input);
+    
+    // Reinitialize parser state
+    initialize_parser(test_input);
+    
+    int success = 1;
+    
+    // Skip the regular program call if we expect the test to fail
+    if (is_valid_expected) {
+        // Try to parse, but catch errors
+        int old_stderr = dup(STDERR_FILENO);
+        freopen("/dev/null", "w", stderr); // Redirect stderr to prevent error messages printing
+        
+        // Use a setjmp/longjmp to simulate try/catch
+        jmp_buf env;
+        int error_code = setjmp(env);
+        
+        if (!error_code) {
+            program(); // Start parsing
+            printf("✓ Program parsed successfully!\n");
+        } else {
+            success = 0;
+            printf("✗ Parsing failed unexpectedly!\n");
+        }
+        
+        // Restore stderr
+        fflush(stderr);
+        dup2(old_stderr, STDERR_FILENO);
+        close(old_stderr);
+    } else {
+        // For invalid cases, we expect an error
+        int old_stderr = dup(STDERR_FILENO);
+        freopen("/dev/null", "w", stderr); // Redirect stderr
+        
+        // Use a setjmp/longjmp to simulate try/catch
+        jmp_buf env;
+        if (setjmp(env) == 0) {
+            program(); // Start parsing
+            printf("✗ Expected parsing to fail, but it succeeded!\n");
+            success = 0;
+        } else {
+            printf("✓ Parsing failed as expected for invalid input.\n");
+        }
+        
+        // Restore stderr
+        fflush(stderr);
+        dup2(old_stderr, STDERR_FILENO);
+        close(old_stderr);
+    }
+    
+    printf("\nTest result: %s\n", success ? "PASS" : "FAIL");
+}
 
+// Add this function to display an interactive menu
+void display_interactive_menu() {
+    printf("\n=== Recursive Descent Parser - Interactive Menu ===\n");
+    printf("1. Enter code via console input\n");
+    printf("2. Read code from a file\n");
+    printf("3. Run test suite\n");
+    printf("4. Use default test case\n");
+    printf("5. Change LTD value (currently: %d)\n", g_student_ltd_value);
+    printf("6. Exit\n");
+    printf("Enter your choice (1-6): ");
+}
+
+// Modify your main function to include the interactive menu
 int main(int argc, char *argv[]) {
     const char* input_source = NULL;
-    char* file_content = NULL; // For content read from file
+    char* file_content = NULL;
+    int run_test_suite = 0;
+    int use_console_input = 0;
+    int interactive_mode = argc == 1; // If no arguments are provided, go to interactive mode
+    char filename[256];
 
     printf("Recursive Descent Parser\n");
     printf("Default LTD value: %d\n", g_student_ltd_value);
-
-    // Optional: Allow setting LTD from command line, e.g., ./parser -ltd 999 source.txt
-    // Or ./parser source.txt (uses default LTD)
-    // Or ./parser -ltd 999 (uses hardcoded test string with new LTD)
-    // Or ./parser (uses hardcoded test string with default LTD)
-
-    int arg_offset = 1;
-    if (argc > 2 && strcmp(argv[1], "-ltd") == 0) {
-        g_student_ltd_value = atoi(argv[2]);
-        printf("Using custom LTD value from command line: %d\n", g_student_ltd_value);
-        arg_offset = 3; // Next argument is potentially the filename
+    
+    if (!interactive_mode) {
+        printf("Usage: %s [-ltd NUM] [-test] [-console] [-interactive] [filename]\n", argv[0]);
+        printf("  -ltd NUM     : Set custom Last Three Digits value\n");
+        printf("  -test        : Run the test suite\n");
+        printf("  -console     : Read input from console\n");
+        printf("  -interactive : Show interactive menu\n");
+        printf("  filename     : Read input from specified file\n\n");
     }
 
+    // Parse command line arguments if not in interactive mode
+    int arg_offset = 1;
+    while (!interactive_mode && arg_offset < argc) {
+        if (strcmp(argv[arg_offset], "-ltd") == 0 && arg_offset + 1 < argc) {
+            g_student_ltd_value = atoi(argv[arg_offset + 1]);
+            printf("Using custom LTD value from command line: %d\n", g_student_ltd_value);
+            arg_offset += 2;
+        } else if (strcmp(argv[arg_offset], "-test") == 0) {
+            run_test_suite = 1;
+            arg_offset++;
+        } else if (strcmp(argv[arg_offset], "-console") == 0) {
+            use_console_input = 1;
+            arg_offset++;
+        } else if (strcmp(argv[arg_offset], "-interactive") == 0) {
+            interactive_mode = 1;
+            arg_offset++;
+        } else {
+            break;
+        }
+    }
 
-    if (argc > arg_offset) { // A filename is provided
+    // Interactive menu handling
+    if (interactive_mode) {
+        int choice;
+        do {
+            display_interactive_menu();
+            if (scanf("%d", &choice) != 1) {
+                // Clear input buffer if scanf fails
+                int c;
+                while ((c = getchar()) != '\n' && c != EOF);
+                choice = 0;  // Invalid choice
+            }
+            
+            // Clear any remaining characters in input buffer
+            while (getchar() != '\n');
+
+            switch (choice) {
+                case 1: // Console input
+                    printf("Enter your code (end with Ctrl+D on Unix/Linux or Ctrl+Z+Enter on Windows):\n");
+                    file_content = read_from_console();
+                    if (file_content) {
+                        input_source = file_content;
+                        
+                        printf("\nParsing the following input:\n---\n%s\n---\n\n", input_source);
+                        initialize_parser(input_source);
+                        
+                        // Try to parse with error handling
+                        jmp_buf env;
+                        if (setjmp(env) == 0) {
+                            program();
+                            printf("\n------------------------------------\n");
+                            printf("Program parsed successfully!\n");
+                            printf("------------------------------------\n");
+                        } else {
+                            printf("\n------------------------------------\n");
+                            printf("Parsing failed!\n");
+                            printf("------------------------------------\n");
+                        }
+                        
+                        free(file_content);
+                        file_content = NULL;
+                    }
+                    break;
+                    
+                case 2: // File input
+                    printf("Enter filename: ");
+                    if (scanf("%255s", filename) == 1) {
+                        file_content = read_file_to_string(filename);
+                        if (file_content) {
+                            input_source = file_content;
+                            
+                            printf("\nParsing file: %s\n", filename);
+                            printf("---\n%s\n---\n\n", input_source);
+                            initialize_parser(input_source);
+                            
+                            // Try to parse with error handling
+                            jmp_buf env;
+                            if (setjmp(env) == 0) {
+                                program();
+                                printf("\n------------------------------------\n");
+                                printf("Program parsed successfully!\n");
+                                printf("------------------------------------\n");
+                            } else {
+                                printf("\n------------------------------------\n");
+                                printf("Parsing failed!\n");
+                                printf("------------------------------------\n");
+                            }
+                            
+                            free(file_content);
+                            file_content = NULL;
+                        } else {
+                            printf("Error: Could not read file '%s'\n", filename);
+                        }
+                    }
+                    break;
+                    
+                case 3: // Test suite
+                    {
+                        printf("Running test suite...\n");
+                        
+                        const int valid_test_count = 4;  // First 4 test cases are valid
+                        const int total_test_count = sizeof(test_cases) / sizeof(test_cases[0]);
+                        
+                        for (int i = 0; i < total_test_count; i++) {
+                            process_test_case(test_cases[i], i + 1, i < valid_test_count);
+                        }
+                        
+                        printf("\nTest suite completed.\n");
+                    }
+                    break;
+                    
+                case 4: // Default test case
+                    input_source = test_cases[0];
+                    
+                    printf("\nParsing default test case:\n---\n%s\n---\n\n", input_source);
+                    initialize_parser(input_source);
+                    
+                    // Try to parse with error handling
+                    {
+                        jmp_buf env;
+                        if (setjmp(env) == 0) {
+                            program();
+                            printf("\n------------------------------------\n");
+                            printf("Program parsed successfully!\n");
+                            printf("------------------------------------\n");
+                        } else {
+                            printf("\n------------------------------------\n");
+                            printf("Parsing failed!\n");
+                            printf("------------------------------------\n");
+                        }
+                    }
+                    break;
+                    
+                case 5: // Change LTD value
+                    printf("Current LTD value: %d\n", g_student_ltd_value);
+                    printf("Enter new LTD value: ");
+                    int new_ltd;
+                    if (scanf("%d", &new_ltd) == 1) {
+                        g_student_ltd_value = new_ltd;
+                        printf("LTD value updated to: %d\n", g_student_ltd_value);
+                    } else {
+                        printf("Invalid input. LTD value unchanged.\n");
+                        // Clear input buffer
+                        int c;
+                        while ((c = getchar()) != '\n' && c != EOF);
+                    }
+                    break;
+                    
+                case 6: // Exit
+                    printf("Exiting program. Goodbye!\n");
+                    break;
+                    
+                default:
+                    printf("Invalid choice. Please enter a number between 1 and 6.\n");
+            }
+            
+            if (choice != 6) {
+                printf("\nPress Enter to continue...");
+                getchar();  // Wait for user to press enter
+            }
+            
+        } while (choice != 6);
+        
+        return 0;
+    }
+
+    
+    // Process based on provided flags
+    if (run_test_suite) {
+        printf("Running test suite...\n");
+        
+        // Count of valid test cases (the first 4)
+        const int valid_test_count = 4;
+        const int total_test_count = sizeof(test_cases) / sizeof(test_cases[0]);
+        
+        for (int i = 0; i < total_test_count; i++) {
+            process_test_case(test_cases[i], i + 1, i < valid_test_count);
+        }
+        
+        printf("\nTest suite completed.\n");
+        return 0;
+    }
+
+    // Get input source (priority: console > file > default test case)
+    if (use_console_input) {
+        printf("Reading from console input...\n");
+        file_content = read_from_console();
+        if (!file_content) {
+            return 1; // Error reading from console
+        }
+        input_source = file_content;
+    }
+    else if (argc > arg_offset) { // A filename is provided
         printf("Attempting to read input from file: %s\n", argv[arg_offset]);
         file_content = read_file_to_string(argv[arg_offset]);
         if (!file_content) {
             return 1; // Error reading file
         }
         input_source = file_content;
-    } else {
+    } 
+    else {
         // Default test case if no file is provided
         printf("No input file provided. Using a default valid test case.\n");
-        input_source = "{ if (a == LTD) { while (b < 100) { (a + b) * (b - LTD); } } else { (x + y) * (a - b); } }";
-        // Example of an invalid case to test:
-        // input_source = "{ a + b }"; // Missing semicolon
-        // input_source = "{ if (a == b) { a + b; }"; // Mismatched brackets (missing final '}')
-        // input_source = "{ 3a + 5; }"; // Invalid identifier start -> Lexer will make '3' then 'a', parser should catch 'a' as unexpected
+        input_source = test_cases[0]; // Use first test case as default
     }
 
     printf("\nParsing the following input:\n---\n%s\n---\n\n", input_source);
